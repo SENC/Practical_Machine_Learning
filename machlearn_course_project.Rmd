@@ -1,0 +1,121 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Mark Knox"
+date: "April 24, 2015"
+output: html_document
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.height=4, fig.width=6,
+                      warning=FALSE, message=FALSE)
+```
+
+###Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit, it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal was to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants who were asked to perform barbell lifts correctly and incorrectly in 5 different ways to identify a prediction model for classifying lift quality. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+###Data Processing
+"Training" and "Testing" data was downloaded from the provided website. The Training data set consisted of the complete data set to be used for training and testing the model accuracy. The Testing data set consisted of the samples to be used for project submission prediction.
+
+```{r}
+train_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+train_file <- "./data/pml-training.csv"
+test_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+test_file <- "./data/pml-testing.csv"
+
+if (!file.exists("data")) {dir.create("data")}
+if (!file.exists(train_file)) {download.file(train_url, train_file, method="curl")}
+if (!file.exists(test_file)) {download.file(test_url, test_file, method="curl")}
+
+train_data <- read.csv(train_file)
+test_data <- read.csv(test_file)
+```
+
+The training data set provided consisted of **`r nrow(train_data)`** observations of **`r ncol(train_data)`** variables. The first step was to remove the irrelevant variables (e.g. subject name, timestamps, windows) from the training data and keep just the classification and measurement-related variables.
+```{r}
+# select relevant columns (e.g. classification, measurement-related data) from data set
+train_data <- train_data[, grep("classe|_belt|_arm|_dumbbell|_forearm", colnames(train_data))]
+```
+Next, I removed variables in the data set with 'NA' values in 90+% of the observations, variables with near zero variance, and variables with high correlation to other variables (90% or greater).
+```{r}
+library(caret)
+# remove columns with predominantly NA values (> 90% of rows)
+col_na <- colSums(is.na(train_data)) > (0.90 * nrow(train_data))
+train_data <- train_data[, !col_na]
+# remove near zero variance columns
+train_data <- train_data[, -nearZeroVar(train_data)]
+# remove highly correlated feature columns
+corr_matrix <- cor(train_data[, sapply(train_data, is.numeric)])
+col_corr <- findCorrelation(corr_matrix, cutoff=0.90)
+train_data <- train_data[, -col_corr]
+```
+The remaining filtered data set consisted of **`r ncol(train_data) - 1`** feature variables and the classification variable:
+```{r, echo=FALSE}
+colnames(train_data)
+```
+
+###Model Selection
+First, I split the processed data set into training and testing subsets using an 80/20 training/testing split and set aside the testing subset for later model assessment.
+```{r}
+library(caret); set.seed(1157)
+
+# split the data set into training and testing sets using 80/20 split
+train_index <- createDataPartition(y=train_data$classe, p=0.80, list=FALSE)
+train_sub <- train_data[train_index, ]
+test_sub <- train_data[-train_index, ]
+```
+
+Using the training subset, I tried the following prediction models: *Classification Trees*, *Random Forests*, and *Stochastic Gradient Boosting*. **Classification Trees** were tried first because they are fast and easy to interpret. However, the best accuracy achieved was 50.94% (SD 1.25%), which was unacceptable. **Random Forests** were tried next because accuracy is one of their strengths and they are good for the characteristic noise in sensor data. The resulting accuracy looked quite good, and this was a definite candidate for my prediction model. Lastly, I tried **Stochastic Gradient Boosting** because they are also supposed to be one of the more accurate prediction models. The best accuracy achieved using stochastic gradient boosting was 96.06% (SD 0.49%), which was good, but not as good as seen with Random Forests. Based on the results of the three trials, I ended up selecting **Random Forests** for my prediction model.
+
+###Model Training
+I used **5-fold Cross Validation** when training the random forest model to prevent overfitting on the training data and to estimate the out-of-sample error (referred to as "OOB estimate of error rate" in random forest models).
+```{r}
+# define training control to use 5-fold cross validation
+train_control <- trainControl(method="cv", number=5)
+# train the model using random forest
+rf_model <- train(classe ~ ., data=train_sub, method="rf", trControl=train_control)
+```
+
+The resulting random forest model is as follows:
+```{r, echo=FALSE}
+rf_model
+```
+The optimal model resulted from using **`r rf_model$bestTune$mtry`** variables (mtry).
+
+###Model Evaluation
+The details of the final model selected, including the Confusion Matrix and **OOB estimate of error rate (using cross-validation)** are as follows:
+```{r, echo=FALSE}
+rf_model$finalModel
+```
+
+The OOB estimate of error rate indicated above should be a fairly accurate estimate of the out-of-sample error since it was determined using 5-fold cross-validation to segregate the training and testing data. However, as another measure of out-of-sample error, I applied the final random forest model to the testing data subset (set aside above) to predict the classifications and compare to the actual values.
+```{r}
+# estimate out-of-sample error using test data set aside previously
+test_predictions <- predict(rf_model, newdata=test_sub)
+confusion_matrix <- confusionMatrix(test_predictions, test_sub$classe)
+```
+ The resulting Confusion Matrix shows that estimated out-of-sample error using this method is: **`r round((1 - confusion_matrix$overall['Accuracy'])*100, 2)`%** (1 - Accuracy). The OOB estimate of error rate generated by the random forest model above is in alignment with this since the 95% Confidence Interval for Accuracy is: **(`r round(confusion_matrix$overall['AccuracyLower'],4)`, `r round(confusion_matrix$overall['AccuracyUpper'],4)`)**.
+```{r, echo=FALSE}
+confusion_matrix
+``` 
+
+The following plot shows the resulting Accuracy as a function of the number of randomly selected predictors:
+```{r}
+plot(rf_model, metric="Accuracy")
+```
+
+The following plot shows the relative importance of the top 25 variables in the final model:
+```{r}
+plot(varImp(rf_model), top=25)
+```
+
+###Final Predictions
+Lastly, I used my prediction model to predict the classification results for the test cases provided.
+```{r}
+# predict classifications for "test" data provided
+col_names <- colnames(train_data)
+test_data <- test_data[, colnames(test_data) %in% col_names]
+final_predictions <- predict(rf_model, newdata=test_data)
+```
+The prediction results are as follows:
+```{r, echo=FALSE}
+final_predictions
+```
